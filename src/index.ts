@@ -72,6 +72,15 @@ app.get('/oura/callback', async (c) => {
   }
 });
 
+app.use('/mcp', async (c, next) => {
+  const authHeader = c.req.header('Authorization') ?? '';
+  const expected = `Bearer ${c.env.MCP_AUTH_TOKEN}`;
+  if (!(await timingSafeEqual(authHeader, expected))) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  return next();
+});
+
 app.use('/mcp/*', async (c, next) => {
   const authHeader = c.req.header('Authorization') ?? '';
   const expected = `Bearer ${c.env.MCP_AUTH_TOKEN}`;
@@ -79,6 +88,12 @@ app.use('/mcp/*', async (c, next) => {
     return c.json({ error: 'Unauthorized' }, 401);
   }
   return next();
+});
+
+app.all('/mcp', async (c) => {
+  const server = buildMcpServer(c.env);
+  const handle = createMcpHandler(server);
+  return handle(c.req.raw, c.env, c.executionCtx);
 });
 
 app.all('/mcp/*', async (c) => {
