@@ -3,6 +3,7 @@ import { createMcpHandler } from 'agents/mcp';
 import type { Env } from './types';
 import { runScheduled } from './scheduled';
 import { buildMcpServer } from './mcp/server';
+import { PRIVACY_POLICY_HTML, TERMS_OF_SERVICE_HTML } from './legal';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -20,6 +21,9 @@ async function timingSafeEqual(a: string, b: string): Promise<boolean> {
 }
 
 app.get('/health', (c) => c.json({ ok: true }));
+
+app.get('/privacy', (c) => c.html(PRIVACY_POLICY_HTML));
+app.get('/terms', (c) => c.html(TERMS_OF_SERVICE_HTML));
 
 app.use('/mcp/*', async (c, next) => {
   const authHeader = c.req.header('Authorization') ?? '';
