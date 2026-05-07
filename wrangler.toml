@@ -1,0 +1,11 @@
+name = "wellness-mcp"
+main = "src/index.ts"
+compatibility_date = "2025-11-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sensor-history"
+database_id = "966517ba-1cce-4a51-8a2b-442abacfefd1"
+
+[triggers]
+crons = ["*/10 * * * *"]
