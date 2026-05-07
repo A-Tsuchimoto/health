@@ -5,21 +5,16 @@ import { runScheduled } from './scheduled';
 import { buildMcpServer } from './mcp/server';
 import { PRIVACY_POLICY_HTML, TERMS_OF_SERVICE_HTML } from './legal';
 import { startOAuthFlow, handleOAuthCallback } from './oura/auth';
+import {
+  authServerMetadata,
+  protectedResourceMetadata,
+  issueCode,
+  verifyCode,
+  pkceMatches,
+  timingSafeEqual,
+} from './oauth/server';
 
 export const app = new Hono<{ Bindings: Env }>();
-
-async function timingSafeEqual(a: string, b: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const [ah, bh] = await Promise.all([
-    crypto.subtle.digest('SHA-256', enc.encode(a)),
-    crypto.subtle.digest('SHA-256', enc.encode(b)),
-  ]);
-  const aa = new Uint8Array(ah);
-  const ba = new Uint8Array(bh);
-  let diff = 0;
-  for (let i = 0; i < aa.length; i++) diff |= aa[i] ^ ba[i];
-  return diff === 0;
-}
 
 function callbackUri(reqUrl: string): string {
   const u = new URL(reqUrl);
@@ -31,51 +26,134 @@ app.get('/health', (c) => c.json({ ok: true }));
 app.get('/privacy', (c) => c.html(PRIVACY_POLICY_HTML));
 app.get('/terms', (c) => c.html(TERMS_OF_SERVICE_HTML));
 
-// OAuth 2.0 discovery — claude.ai uses this to find the token endpoint
+// --- OAuth 2.1 endpoints (for claude.ai connector) -------------------------
+
 app.get('/.well-known/oauth-authorization-server', (c) => {
-  const origin = new URL(c.req.url).origin;
+  return c.json(authServerMetadata(new URL(c.req.url).origin));
+});
+
+app.get('/.well-known/oauth-protected-resource', (c) => {
+  return c.json(protectedResourceMetadata(new URL(c.req.url).origin));
+});
+
+// Dynamic Client Registration stub. claude.ai may probe this on save; we
+// echo back a stable client_id without persisting anything since the real
+// auth gate is client_secret == MCP_AUTH_TOKEN at /oauth/token.
+app.post('/register', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   return c.json({
-    issuer: origin,
-    token_endpoint: `${origin}/oauth/token`,
-    grant_types_supported: ['client_credentials'],
-    token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+    client_id: 'wellness-mcp',
+    client_id_issued_at: Math.floor(Date.now() / 1000),
+    redirect_uris: (body.redirect_uris as string[] | undefined) ?? [],
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+    token_endpoint_auth_method: 'client_secret_post',
   });
 });
 
-// OAuth 2.0 token endpoint — accepts client_credentials with MCP_AUTH_TOKEN as secret
+// Authorization endpoint — auto-approves and redirects with a signed code.
+// Public on purpose: code is HMAC-bound to the redirect_uri and PKCE
+// challenge, and the token exchange still requires client_secret.
+app.get('/authorize', async (c) => {
+  const responseType = c.req.query('response_type');
+  const redirectUri = c.req.query('redirect_uri');
+  const state = c.req.query('state');
+  const codeChallenge = c.req.query('code_challenge');
+  const codeChallengeMethod = c.req.query('code_challenge_method');
+
+  if (responseType !== 'code') {
+    return c.json({ error: 'unsupported_response_type' }, 400);
+  }
+  if (!redirectUri) {
+    return c.json({ error: 'invalid_request', error_description: 'redirect_uri required' }, 400);
+  }
+  if (!codeChallenge || codeChallengeMethod !== 'S256') {
+    return c.json(
+      { error: 'invalid_request', error_description: 'PKCE S256 required' },
+      400,
+    );
+  }
+
+  const code = await issueCode(
+    {
+      redirect_uri: redirectUri,
+      code_challenge: codeChallenge,
+      exp: Math.floor(Date.now() / 1000) + 600,
+    },
+    c.env.MCP_AUTH_TOKEN,
+  );
+
+  const url = new URL(redirectUri);
+  url.searchParams.set('code', code);
+  if (state) url.searchParams.set('state', state);
+  return c.redirect(url.toString());
+});
+
 app.post('/oauth/token', async (c) => {
-  let clientSecret = '';
-  let grantType = '';
-
   const body = await c.req.parseBody();
-  grantType = (body['grant_type'] as string) ?? '';
-  clientSecret = (body['client_secret'] as string) ?? '';
+  const grantType = (body['grant_type'] as string) ?? '';
 
-  // Also accept client secret via Basic auth header
+  let clientSecret = (body['client_secret'] as string) ?? '';
   if (!clientSecret) {
     const authHeader = c.req.header('Authorization') ?? '';
     if (authHeader.startsWith('Basic ')) {
-      const decoded = atob(authHeader.slice(6));
-      clientSecret = decoded.split(':')[1] ?? '';
+      clientSecret = atob(authHeader.slice(6)).split(':')[1] ?? '';
     }
   }
 
-  if (grantType !== 'client_credentials') {
-    return c.json({ error: 'unsupported_grant_type' }, 400);
+  const validSecret = await timingSafeEqual(clientSecret, c.env.MCP_AUTH_TOKEN);
+
+  if (grantType === 'authorization_code') {
+    if (!validSecret) return c.json({ error: 'invalid_client' }, 401);
+
+    const code = (body['code'] as string) ?? '';
+    const codeVerifier = (body['code_verifier'] as string) ?? '';
+    const redirectUri = (body['redirect_uri'] as string) ?? '';
+
+    const payload = await verifyCode(code, c.env.MCP_AUTH_TOKEN);
+    if (!payload || payload.redirect_uri !== redirectUri) {
+      return c.json({ error: 'invalid_grant' }, 400);
+    }
+    if (!(await pkceMatches(codeVerifier, payload.code_challenge))) {
+      return c.json(
+        { error: 'invalid_grant', error_description: 'PKCE verification failed' },
+        400,
+      );
+    }
+
+    return c.json({
+      access_token: c.env.MCP_AUTH_TOKEN,
+      token_type: 'Bearer',
+      expires_in: 3600 * 24 * 365,
+      scope: 'mcp',
+    });
   }
 
-  if (!(await timingSafeEqual(clientSecret, c.env.MCP_AUTH_TOKEN))) {
-    return c.json({ error: 'invalid_client' }, 401);
+  if (grantType === 'client_credentials') {
+    if (!validSecret) return c.json({ error: 'invalid_client' }, 401);
+    return c.json({
+      access_token: c.env.MCP_AUTH_TOKEN,
+      token_type: 'Bearer',
+      expires_in: 3600,
+      scope: 'mcp',
+    });
   }
 
-  return c.json({
-    access_token: c.env.MCP_AUTH_TOKEN,
-    token_type: 'Bearer',
-    expires_in: 3600,
-  });
+  if (grantType === 'refresh_token') {
+    if (!validSecret) return c.json({ error: 'invalid_client' }, 401);
+    return c.json({
+      access_token: c.env.MCP_AUTH_TOKEN,
+      token_type: 'Bearer',
+      expires_in: 3600 * 24 * 365,
+      scope: 'mcp',
+    });
+  }
+
+  return c.json({ error: 'unsupported_grant_type' }, 400);
 });
 
-// Oura OAuth — start: visited in browser with token query param for auth
+// --- Oura OAuth ------------------------------------------------------------
+
 app.get('/oura/auth', async (c) => {
   const token = c.req.query('token') ?? '';
   if (!(await timingSafeEqual(token, c.env.MCP_AUTH_TOKEN))) {
@@ -85,7 +163,6 @@ app.get('/oura/auth', async (c) => {
   return c.redirect(authUrl);
 });
 
-// Oura OAuth — callback: Oura redirects here after user grants access
 app.get('/oura/callback', async (c) => {
   const error = c.req.query('error');
   if (error) {
@@ -116,9 +193,8 @@ app.get('/oura/callback', async (c) => {
   }
 });
 
-// MCP は Hono を経由せず fetch export で直接処理する
-// (createMcpHandler が url.pathname を完全一致チェックするため、
-//  Hono 経由だとパスのズレで 404 になるケースを回避)
+// --- MCP -------------------------------------------------------------------
+
 async function handleMcp(
   request: Request,
   env: Env,
@@ -127,14 +203,17 @@ async function handleMcp(
   const authHeader = request.headers.get('Authorization') ?? '';
   const expected = `Bearer ${env.MCP_AUTH_TOKEN}`;
   if (!(await timingSafeEqual(authHeader, expected))) {
+    const origin = new URL(request.url).origin;
     return new Response(JSON.stringify({ error: 'Unauthorized' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'WWW-Authenticate': `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource"`,
+      },
     });
   }
   const { pathname } = new URL(request.url);
   const server = buildMcpServer(env);
-  // route: pathname でハンドラ内部の完全一致チェックを確実に通過させる
   return createMcpHandler(server, { route: pathname })(request, env, ctx);
 }
 
