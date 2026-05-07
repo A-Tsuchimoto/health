@@ -1,4 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('agents/mcp', () => ({
+  createMcpHandler: vi.fn().mockReturnValue(() => new Response('mcp')),
+}));
+
 import { app } from '../index';
 
 describe('GET /health', () => {
