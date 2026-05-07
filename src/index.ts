@@ -31,6 +31,50 @@ app.get('/health', (c) => c.json({ ok: true }));
 app.get('/privacy', (c) => c.html(PRIVACY_POLICY_HTML));
 app.get('/terms', (c) => c.html(TERMS_OF_SERVICE_HTML));
 
+// OAuth 2.0 discovery — claude.ai uses this to find the token endpoint
+app.get('/.well-known/oauth-authorization-server', (c) => {
+  const origin = new URL(c.req.url).origin;
+  return c.json({
+    issuer: origin,
+    token_endpoint: `${origin}/oauth/token`,
+    grant_types_supported: ['client_credentials'],
+    token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic'],
+  });
+});
+
+// OAuth 2.0 token endpoint — accepts client_credentials with MCP_AUTH_TOKEN as secret
+app.post('/oauth/token', async (c) => {
+  let clientSecret = '';
+  let grantType = '';
+
+  const body = await c.req.parseBody();
+  grantType = (body['grant_type'] as string) ?? '';
+  clientSecret = (body['client_secret'] as string) ?? '';
+
+  // Also accept client secret via Basic auth header
+  if (!clientSecret) {
+    const authHeader = c.req.header('Authorization') ?? '';
+    if (authHeader.startsWith('Basic ')) {
+      const decoded = atob(authHeader.slice(6));
+      clientSecret = decoded.split(':')[1] ?? '';
+    }
+  }
+
+  if (grantType !== 'client_credentials') {
+    return c.json({ error: 'unsupported_grant_type' }, 400);
+  }
+
+  if (!(await timingSafeEqual(clientSecret, c.env.MCP_AUTH_TOKEN))) {
+    return c.json({ error: 'invalid_client' }, 401);
+  }
+
+  return c.json({
+    access_token: c.env.MCP_AUTH_TOKEN,
+    token_type: 'Bearer',
+    expires_in: 3600,
+  });
+});
+
 // Oura OAuth — start: visited in browser with token query param for auth
 app.get('/oura/auth', async (c) => {
   const token = c.req.query('token') ?? '';
