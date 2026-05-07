@@ -11,7 +11,7 @@ function text(value: unknown) {
 
 export function buildMcpServer(env: Env): McpServer {
   const server = new McpServer({ name: 'wellness-mcp', version: '1.0.0' });
-  const oura = new OuraClient(env.OURA_ACCESS_TOKEN);
+  const oura = new OuraClient(env.DB, env.OURA_CLIENT_ID, env.OURA_CLIENT_SECRET);
   const switchbot = new SwitchBotClient(env.SWITCHBOT_TOKEN, env.SWITCHBOT_SECRET);
 
   server.tool(

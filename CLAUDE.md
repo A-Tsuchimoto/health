@@ -35,7 +35,8 @@ claude.ai カスタムコネクタ経由で健康データを自然言語で照�
 - `CLOUDFLARE_ACCOUNT_ID`
 
 ### Worker Secrets（デプロイ後にダッシュボードで設定）
-- `OURA_ACCESS_TOKEN` — Oura Cloud の Personal Access Token
+- `OURA_CLIENT_ID` — Oura Developer Portal で発行する OAuth Client ID
+- `OURA_CLIENT_SECRET` — 同 Client Secret
 - `SWITCHBOT_TOKEN` — SwitchBot アプリの Developer Options で取得
 - `SWITCHBOT_SECRET` — 同 Client Secret
 - `MCP_AUTH_TOKEN` — MCP クライアントが Bearer で送るランダム文字列
@@ -102,6 +103,20 @@ recorded_at INTEGER NOT NULL  -- Unix timestamp (秒)
 インデックス: `(device_id, recorded_at)`
 
 ---
+
+## Oura OAuth 2.0 フロー
+
+Oura API v2 は Authorization Code フロー（PKCE なし、client_secret あり）を使う。
+
+- Authorization URL: `https://cloud.ouraring.com/oauth/authorize`
+- Token URL: `https://api.ouraring.com/oauth/token`
+- Scopes: `daily heartrate`
+- トークンは D1 の `oauth_tokens` テーブルに保存（provider = 'oura'）
+- 有効期限 5 分前に `refresh_token` で自動更新
+- 初回認証: ブラウザで `/oura/auth?token=<MCP_AUTH_TOKEN>` を開く
+  → Oura の認可画面 → Allow → `/oura/callback` でコード交換 → D1 保存
+
+実装: `src/oura/auth.ts`（startOAuthFlow / handleOAuthCallback / getValidToken）
 
 ## MCP エンドポイントのアーキテクチャ
 

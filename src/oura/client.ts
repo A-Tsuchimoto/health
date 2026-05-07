@@ -1,3 +1,5 @@
+import { getValidToken } from './auth';
+
 const BASE_URL = 'https://api.ouraring.com/v2/usercollection';
 
 export interface OuraSleepDocument {
@@ -34,26 +36,32 @@ interface OuraListResponse<T> {
 }
 
 export class OuraClient {
-  private readonly headers: Record<string, string>;
-
-  constructor(accessToken: string) {
-    this.headers = {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    };
-  }
+  constructor(
+    private readonly db: D1Database,
+    private readonly clientId: string,
+    private readonly clientSecret: string,
+  ) {}
 
   private async fetchList<T>(
     endpoint: string,
     params: Record<string, string>,
   ): Promise<T[]> {
+    const token = await getValidToken(this.db, this.clientId, this.clientSecret);
+
     const url = new URL(`${BASE_URL}/${endpoint}`);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
-    const res = await fetch(url.toString(), { headers: this.headers });
+    const res = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
     if (!res.ok) {
       throw new Error(`Oura ${endpoint} failed: ${res.status} ${await res.text()}`);
     }
+
     const json = (await res.json()) as OuraListResponse<T>;
     return json.data;
   }
@@ -71,9 +79,6 @@ export class OuraClient {
   }
 
   getHeartRate(start_datetime: string, end_datetime: string): Promise<OuraHeartRateSample[]> {
-    return this.fetchList<OuraHeartRateSample>('heartrate', {
-      start_datetime,
-      end_datetime,
-    });
+    return this.fetchList<OuraHeartRateSample>('heartrate', { start_datetime, end_datetime });
   }
 }

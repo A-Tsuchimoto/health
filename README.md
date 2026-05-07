@@ -10,8 +10,12 @@ claude.ai
    │  Bearer token (MCP_AUTH_TOKEN)
    ▼
 Cloudflare Worker (wellness-mcp)
-   │  GET /health    — ヘルスチェック
-   │  ALL /mcp/*     — MCP Streamable HTTP (7 ツール)
+   │  GET /health          — ヘルスチェック
+   │  GET /oura/auth       — Oura OAuth フロー開始
+   │  GET /oura/callback   — Oura OAuth コールバック
+   │  ALL /mcp/*           — MCP Streamable HTTP (7 ツール)
+   │  GET /privacy         — プライバシーポリシー
+   │  GET /terms           — 利用規約
    │
    ├─ Oura API v2          — sleep / readiness / activity / heartrate
    ├─ SwitchBot API v1.1   — 温度・湿度・バッテリー
@@ -47,7 +51,7 @@ Cloudflare Worker (wellness-mcp)
 
 ### d. このリポジトリを Fork する
 
-GitHub 上で **Fork** を押してコピーを作る。  
+GitHub 上で **Fork** を押してコピーを作る。
 （clone して別リポジトリに push でも可）
 
 ### e. GitHub Secrets を登録する
@@ -73,40 +77,67 @@ database_id = "ここを自分の Database ID に置き換える"
 `main` ブランチに push すると GitHub Actions が自動で以下を実行する:
 
 1. `npm test`
-2. D1 マイグレーション（`sensor_readings` テーブルを作成）
+2. D1 マイグレーション（`sensor_readings` / `oauth_tokens` テーブルを作成）
 3. Worker デプロイ
 
 Actions タブで **Deploy** ジョブが ✅ になるまで待つ（初回は 1〜2 分）。
 
 ### g. Worker の URL を確認する
 
-**Workers & Pages → wellness-mcp** を開く。  
-`https://wellness-mcp.<サブドメイン>.workers.dev` 形式の URL が表示される。  
+**Workers & Pages → wellness-mcp** を開く。
+`https://wellness-mcp.<サブドメイン>.workers.dev` 形式の URL が表示される。
 `/health` にアクセスして `{"ok":true}` が返れば正常起動。
 
 ### h. Worker Secrets を登録する
 
-**Workers & Pages → wellness-mcp → Settings → Variables and Secrets**  
-**Add** ボタンから下記 4 つを **Type: Secret** で登録する。
+**Workers & Pages → wellness-mcp → Settings → Variables and Secrets**
+**Add** ボタンから下記 5 つを **Type: Secret** で登録する。
 
 | Secret 名 | 取得方法 |
 |-----------|---------|
-| `OURA_ACCESS_TOKEN` | [Oura Cloud Console](https://cloud.ouraring.com/personal-access-tokens) → **Create Personal Access Token** |
-| `SWITCHBOT_TOKEN` | SwitchBot アプリ → **Profile → Preferences → About** を **10 回連続タップ** → **Developer Options** → Token と Client Secret をコピー |
-| `SWITCHBOT_SECRET` | 同上（Client Secret） |
+| `OURA_CLIENT_ID` | 後述の「Oura アプリ登録」で発行する Client ID |
+| `OURA_CLIENT_SECRET` | 同 Client Secret |
+| `SWITCHBOT_TOKEN` | SwitchBot アプリ → **Profile → Preferences → About** を **10 回連続タップ** → **Developer Options** → Token |
+| `SWITCHBOT_SECRET` | 同 Client Secret |
 | `MCP_AUTH_TOKEN` | [random.org/strings](https://www.random.org/strings/) などで 64 文字のランダム文字列を生成 |
 
 登録後、**Deployments タブ → 最新のデプロイ → ⋯ → Redeploy** でリデプロイして Secrets を有効化する。
 
 > **SwitchBot 注意**: API で取得できるのは SwitchBot Cloud に登録済みのデバイスのみ。
-> ハブ経由ではない単体 Bluetooth デバイスはデータを取得できない場合がある。
-> アプリの **Cloud Services** 設定で対象デバイスのクラウド同期が有効になっているか確認すること。
+> ハブ経由でない単体 Bluetooth デバイスはデータを取得できない場合がある。
+> アプリの **Cloud Services** 設定で対象デバイスのクラウド同期が有効か確認すること。
 
-### i. claude.ai にカスタムコネクタとして登録する
+### i. Oura アプリを登録して OAuth 認証を通す
+
+Oura API v2 は OAuth 2.0 Authorization Code フローを使う。
+
+**アプリ登録**
+
+1. [Oura Cloud Developer Portal](https://cloud.ouraring.com/oauth/applications) を開く
+2. **Create New Application** を押す
+3. 以下を入力:
+   - **Redirect URIs**: `https://wellness-mcp.<サブドメイン>.workers.dev/oura/callback`
+     （g で確認した Worker URL の末尾に `/oura/callback` を付けた値）
+   - **Privacy Policy URL**: `https://wellness-mcp.<サブドメイン>.workers.dev/privacy`
+   - **Terms of Service URL**: `https://wellness-mcp.<サブドメイン>.workers.dev/terms`
+4. 保存後に表示される **Client ID** と **Client Secret** を h で登録する
+
+**OAuth 認証の実行**
+
+h の Secrets 登録とリデプロイが完了したら、ブラウザで以下の URL を開く:
+
+```
+https://wellness-mcp.<サブドメイン>.workers.dev/oura/auth?token=<MCP_AUTH_TOKEN の値>
+```
+
+Oura の認可画面にリダイレクトされるので **Allow** を押す。
+「Oura connected!」と表示されれば認証完了。以後は自動でトークンが更新される。
+
+### j. claude.ai にカスタムコネクタとして登録する
 
 1. [claude.ai](https://claude.ai/) にログイン
-2. 左サイドバー → **Settings → Integrations** (または **Connectors**) を開く
-3. **Add integration** (または **Add custom connector**) を押す
+2. 左サイドバー → **Settings → Integrations**（または **Connectors**）を開く
+3. **Add integration**（または **Add custom connector**）を押す
 4. 以下を入力:
    - **Name**: `wellness-mcp`（任意）
    - **URL**: `https://wellness-mcp.<サブドメイン>.workers.dev/mcp`
@@ -142,12 +173,22 @@ SELECT device_name,
 FROM   sensor_readings
 WHERE  recorded_at >= strftime('%s', 'now', '-24 hours')
 GROUP  BY device_name;
+
+-- Oura トークンの有効期限確認
+SELECT provider,
+       datetime(expires_at, 'unixepoch', 'localtime') AS expires
+FROM   oauth_tokens;
 ```
 
 ### Cron を手動実行する
 
-**Workers & Pages → wellness-mcp → Triggers → Cron Triggers → Run**  
+**Workers & Pages → wellness-mcp → Triggers → Cron Triggers → Run**
 （デプロイ直後の動作確認や、データが蓄積されているかのチェックに使う）
+
+### Oura トークンを再認証する
+
+トークンが失効した場合や「Oura is not connected」エラーが出た場合は、
+ブラウザで `/oura/auth?token=<MCP_AUTH_TOKEN>` を再度開いて認証し直す。
 
 ### Secret を更新する
 
@@ -164,11 +205,13 @@ GROUP  BY device_name;
 | 症状 | 確認・対処 |
 |------|-----------|
 | **claude.ai が 401 を返す** | claude.ai 側の Bearer token と `MCP_AUTH_TOKEN` の値が一致しているか確認。コピー漏れ・末尾スペースに注意 |
-| **claude.ai が 500 を返す** | Logs でスタックトレースを確認。Worker Secret が未設定の場合 `env.XXX is undefined` のようなエラーが出る |
-| **cron が動かない** | Triggers タブで Cron Triggers が有効か確認 → 手動 Run で動くかテスト → SwitchBot アプリで Cloud Services が有効か確認 |
-| **SwitchBot のデータが空** | `list_switchbot_devices` ツールを claude.ai から呼んで、デバイスが返ってくるか確認。Bluetooth 単体デバイスはハブ経由でないと取得できない |
+| **「Oura is not connected」エラー** | `/oura/auth?token=…` を開いて OAuth 認証を完了させる |
+| **Oura の認証が通らない（redirect_uri mismatch）** | Oura アプリの Redirect URI 設定と Worker URL が完全一致しているか確認。末尾スラッシュの有無も要注意 |
+| **claude.ai が 500 を返す** | Logs でスタックトレースを確認。`env.XXX is undefined` なら Worker Secret の登録漏れ |
+| **cron が動かない** | Triggers タブで Cron Triggers が有効か確認 → 手動 Run → SwitchBot の Cloud Services が有効か確認 |
+| **SwitchBot のデータが空** | `list_switchbot_devices` ツールを claude.ai から呼んでデバイスが返るか確認。Bluetooth 単体デバイスはハブ経由が必要 |
 | **claude.ai で「データが取れない」** | チャット下部 **+** → Connectors で `wellness-mcp` が有効になっているか確認。新規チャットを開いて再試行 |
-| **GitHub Actions が失敗する** | Actions タブでエラーログを確認。`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` の Secrets 設定漏れが多い |
+| **GitHub Actions が失敗する** | Actions タブでエラーを確認。`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` の Secrets 登録漏れが多い |
 
 ---
 

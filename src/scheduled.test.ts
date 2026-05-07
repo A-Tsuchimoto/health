@@ -10,7 +10,8 @@ import type { Env } from './types';
 
 const env: Env = {
   DB: {} as D1Database,
-  OURA_ACCESS_TOKEN: 'oura',
+  OURA_CLIENT_ID: 'client-id',
+  OURA_CLIENT_SECRET: 'client-secret',
   SWITCHBOT_TOKEN: 'tok',
   SWITCHBOT_SECRET: 'sec',
   MCP_AUTH_TOKEN: 'mcp',
