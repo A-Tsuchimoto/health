@@ -141,9 +141,16 @@ Oura の認可画面にリダイレクトされるので **Allow** を押す。
 4. 以下を入力:
    - **Name**: `wellness-mcp`（任意）
    - **URL**: `https://wellness-mcp.<サブドメイン>.workers.dev/mcp`
-   - **Authentication type**: Bearer token
-   - **Token**: `MCP_AUTH_TOKEN` に設定した値
-5. 保存後、新しいチャットを開いてチャット下部の **+** → Connectors から `wellness-mcp` を有効にする
+5. **ADVANCED SETTINGS** を開き、以下を入力:
+   - **OAuth ID** （または **Client ID**）: `wellness-mcp`（任意の文字列）
+   - **OAuth Secret** （または **Client Secret**）: `MCP_AUTH_TOKEN` に設定した値
+6. 保存後、新しいチャットを開いてチャット下部の **+** → Connectors から `wellness-mcp` を有効にする
+
+> **認証の仕組み**: claude.ai は OAuth 2.1 + PKCE の Authorization Code フローを使う。
+> Worker は `/.well-known/oauth-authorization-server` でメタデータを返し、
+> `/authorize` で自動承認のコードを発行、`/oauth/token` で
+> `client_secret == MCP_AUTH_TOKEN` を確認した上で Bearer トークンを発行する。
+> （Bearer トークンの実体は `MCP_AUTH_TOKEN` 自身で、`/mcp` 側はその一致を検証する）
 
 > **⚠️ UI 注意**: claude.ai のメニュー名は変更される場合がある。
 > 「Integrations」「Connectors」「MCP Servers」のいずれかのタブを探すこと。
