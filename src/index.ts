@@ -72,38 +72,36 @@ app.get('/oura/callback', async (c) => {
   }
 });
 
-app.use('/mcp', async (c, next) => {
-  const authHeader = c.req.header('Authorization') ?? '';
-  const expected = `Bearer ${c.env.MCP_AUTH_TOKEN}`;
+// MCP は Hono を経由せず fetch export で直接処理する
+// (createMcpHandler が url.pathname を完全一致チェックするため、
+//  Hono 経由だとパスのズレで 404 になるケースを回避)
+async function handleMcp(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const authHeader = request.headers.get('Authorization') ?? '';
+  const expected = `Bearer ${env.MCP_AUTH_TOKEN}`;
   if (!(await timingSafeEqual(authHeader, expected))) {
-    return c.json({ error: 'Unauthorized' }, 401);
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
-  return next();
-});
-
-app.use('/mcp/*', async (c, next) => {
-  const authHeader = c.req.header('Authorization') ?? '';
-  const expected = `Bearer ${c.env.MCP_AUTH_TOKEN}`;
-  if (!(await timingSafeEqual(authHeader, expected))) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
-  return next();
-});
-
-app.all('/mcp', async (c) => {
-  const server = buildMcpServer(c.env);
-  const handle = createMcpHandler(server);
-  return handle(c.req.raw, c.env, c.executionCtx);
-});
-
-app.all('/mcp/*', async (c) => {
-  const server = buildMcpServer(c.env);
-  const handle = createMcpHandler(server);
-  return handle(c.req.raw, c.env, c.executionCtx);
-});
+  const { pathname } = new URL(request.url);
+  const server = buildMcpServer(env);
+  // route: pathname でハンドラ内部の完全一致チェックを確実に通過させる
+  return createMcpHandler(server, { route: pathname })(request, env, ctx);
+}
 
 export default {
-  fetch: app.fetch,
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const { pathname } = new URL(request.url);
+    if (pathname === '/mcp' || pathname.startsWith('/mcp/')) {
+      return handleMcp(request, env, ctx);
+    }
+    return app.fetch(request, env, ctx);
+  },
   async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
     await runScheduled(env);
   },
